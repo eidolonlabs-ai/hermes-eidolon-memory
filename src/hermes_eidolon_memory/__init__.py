@@ -253,26 +253,6 @@ STORE_FACT_SCHEMA = {
     },
 }
 
-GET_CONTEXT_SCHEMA = {
-    "name": "eidolon_context",
-    "description": (
-        "Get a pre-formatted memory context block for the current query. "
-        "Returns a ready-to-use text summary of relevant facts."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "The current user query or topic."},
-            "intent": {
-                "type": "string",
-                "enum": ["factual", "emotional", "casual", "recall"],
-                "description": "Search intent (default: factual).",
-            },
-        },
-        "required": ["query"],
-    },
-}
-
 JOURNAL_SCHEMA = {
     "name": "eidolon_journal",
     "description": (
@@ -574,8 +554,8 @@ class EidolonMemoryProvider(MemoryProvider):
         return (
             "# Eidolon Long-Term Memory\n"
             "Active. Relevant facts are automatically retrieved before each turn.\n"
-            "Use eidolon_search to look up specific memories, eidolon_store_fact to "
-            "persist important information, or eidolon_context for a formatted context block."
+            "Use eidolon_search to look up specific memories or eidolon_store_fact to "
+            "persist important information."
         )
 
     # ------------------------------------------------------------------
@@ -634,7 +614,6 @@ class EidolonMemoryProvider(MemoryProvider):
         return [
             SEARCH_SCHEMA,
             STORE_FACT_SCHEMA,
-            GET_CONTEXT_SCHEMA,
             JOURNAL_SCHEMA,
             GET_JOURNAL_SCHEMA,
             GENERATE_INSIGHTS_SCHEMA,
@@ -655,8 +634,6 @@ class EidolonMemoryProvider(MemoryProvider):
             return self._handle_search(args)
         if tool_name == "eidolon_store_fact":
             return self._handle_store_fact(args)
-        if tool_name == "eidolon_context":
-            return self._handle_get_context(args)
         if tool_name == "eidolon_journal":
             return self._handle_journal(args)
         if tool_name == "eidolon_get_journal":
@@ -740,27 +717,6 @@ class EidolonMemoryProvider(MemoryProvider):
             return json.dumps({"stored": True, "fact_id": result.get("fact_id", "")})
         except Exception as exc:
             logger.warning("eidolon_store_fact failed: %s", exc)
-            return tool_error(str(exc))
-
-    def _handle_get_context(self, args: dict) -> str:
-        query = str(args.get("query", "")).strip()
-        if not query:
-            return tool_error("query is required")
-        intent = str(args.get("intent", self._recall_intent)).lower()
-        if intent not in _VALID_INTENTS:
-            intent = self._recall_intent
-        try:
-            result = self._call("get_context", {
-                "companion_id": self._companion_id,
-                "query": query,
-                "intent": intent,
-            })
-            return json.dumps({
-                "context": result.get("context", ""),
-                "fact_count": result.get("fact_count", 0),
-            })
-        except Exception as exc:
-            logger.warning("eidolon_context failed: %s", exc)
             return tool_error(str(exc))
 
     def _handle_journal(self, args: dict) -> str:
