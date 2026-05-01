@@ -31,3 +31,18 @@ htmlcov/
 
 # uv lock file (not needed for libraries)
 uv.lock
+
+# Environment secrets
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor swap files
+*.swp
+*.swo
+
+# Ruff cache
+.ruff_cache/

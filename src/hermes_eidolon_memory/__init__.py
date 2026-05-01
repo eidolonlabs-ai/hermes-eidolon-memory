@@ -273,7 +273,6 @@ GET_CONTEXT_SCHEMA = {
     },
 }
 
-
 JOURNAL_SCHEMA = {
     "name": "eidolon_journal",
     "description": (
@@ -353,6 +352,138 @@ LOOKUP_FACT_SCHEMA = {
             "predicate": {"type": "string", "description": "Optional relationship to filter by (e.g. 'prefers', 'owns', 'IS_NAMED')."},
         },
         "required": ["subject"],
+    },
+}
+
+DELETE_FACT_SCHEMA = {
+    "name": "eidolon_delete_fact",
+    "description": (
+        "Permanently delete a fact from long-term memory by its edge_id. "
+        "Use only when the user explicitly asks to forget or remove a specific fact."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "edge_id": {"type": "string", "description": "The UUID of the fact to delete."},
+        },
+        "required": ["edge_id"],
+    },
+}
+
+UPDATE_FACT_SCHEMA = {
+    "name": "eidolon_update_fact",
+    "description": (
+        "Update the importance and/or confidence of an existing fact. "
+        "Use when the user corrects the significance of a stored fact or when re-prioritizing memories."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "edge_id": {"type": "string", "description": "The UUID of the fact to update."},
+            "importance": {"type": "number", "description": "New importance score (0.0–1.0)."},
+            "confidence": {"type": "number", "description": "Optional new confidence score (0.0–1.0). Omit to leave unchanged."},
+        },
+        "required": ["edge_id", "importance"],
+    },
+}
+
+GET_EPISODIC_SCHEMA = {
+    "name": "eidolon_get_episodic",
+    "description": (
+        "Search episodic memories (diary entries, dreams, conversations, reflections) by topic. "
+        "Use when the user asks about past events, whether something was discussed, or wants to recall experiences."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for in episodic memories."},
+            "memory_types": {
+                "type": "string",
+                "description": "Comma-separated list of types to filter by (e.g. 'diary,dream,conversation'). Omit for all types.",
+            },
+            "intent": {
+                "type": "string",
+                "enum": ["factual", "emotional", "casual", "recall"],
+                "description": "Search intent (default: factual).",
+            },
+            "limit": {"type": "integer", "description": "Max results (default: 5)."},
+        },
+        "required": ["query"],
+    },
+}
+
+GET_RELATIONSHIP_SCHEMA = {
+    "name": "eidolon_get_relationship",
+    "description": (
+        "Get the current relationship state with the user — trust, closeness, interaction count, "
+        "and milestones. Use to calibrate tone and intimacy in responses."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+SET_PREFERENCE_SCHEMA = {
+    "name": "eidolon_set_preference",
+    "description": (
+        "Set or update a user preference (key-value pair) in long-term memory. "
+        "Use when the user expresses a preference worth remembering (e.g. communication style, topics to avoid)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": "The preference key (e.g. 'tone', 'language', 'topic_avoid')."},
+            "value": {"type": "string", "description": "The preference value."},
+            "source": {
+                "type": "string",
+                "enum": ["explicit", "inferred"],
+                "description": "How the preference was obtained. 'explicit' if the user stated it directly.",
+            },
+        },
+        "required": ["key", "value"],
+    },
+}
+
+GENERATE_DIARY_SCHEMA = {
+    "name": "eidolon_generate_diary",
+    "description": (
+        "Generate a diary-style memory entry from the companion's perspective about the user. "
+        "Use for scheduled reflection during idle time, not mid-conversation. "
+        "Triggers an LLM generation pass — do not call inside active response generation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+GENERATE_DREAM_SCHEMA = {
+    "name": "eidolon_generate_dream",
+    "description": (
+        "Generate a surreal, dream-like episodic narrative about the user from the companion's perspective. "
+        "Use for occasional proactive content creation during idle moments. "
+        "Triggers an LLM generation pass — do not call inside active response generation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+GET_COMPANION_SCHEMA = {
+    "name": "eidolon_get_companion",
+    "description": (
+        "Get the companion's own configuration — name, persona, pronouns, and personality traits. "
+        "Use for self-awareness or when the user asks about the companion's identity."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
     },
 }
 
@@ -509,6 +640,14 @@ class EidolonMemoryProvider(MemoryProvider):
             GENERATE_INSIGHTS_SCHEMA,
             GENERATE_MUSING_SCHEMA,
             LOOKUP_FACT_SCHEMA,
+            DELETE_FACT_SCHEMA,
+            UPDATE_FACT_SCHEMA,
+            GET_EPISODIC_SCHEMA,
+            GET_RELATIONSHIP_SCHEMA,
+            SET_PREFERENCE_SCHEMA,
+            GENERATE_DIARY_SCHEMA,
+            GENERATE_DREAM_SCHEMA,
+            GET_COMPANION_SCHEMA,
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
@@ -528,6 +667,22 @@ class EidolonMemoryProvider(MemoryProvider):
             return self._handle_generate_musing()
         if tool_name == "eidolon_lookup_fact":
             return self._handle_lookup_fact(args)
+        if tool_name == "eidolon_delete_fact":
+            return self._handle_delete_fact(args)
+        if tool_name == "eidolon_update_fact":
+            return self._handle_update_fact(args)
+        if tool_name == "eidolon_get_episodic":
+            return self._handle_get_episodic(args)
+        if tool_name == "eidolon_get_relationship":
+            return self._handle_get_relationship()
+        if tool_name == "eidolon_set_preference":
+            return self._handle_set_preference(args)
+        if tool_name == "eidolon_generate_diary":
+            return self._handle_generate_diary()
+        if tool_name == "eidolon_generate_dream":
+            return self._handle_generate_dream()
+        if tool_name == "eidolon_get_companion":
+            return self._handle_get_companion()
         return tool_error(f"Unknown eidolon tool: {tool_name}")
 
     def _handle_search(self, args: dict) -> str:
@@ -694,6 +849,158 @@ class EidolonMemoryProvider(MemoryProvider):
             return json.dumps({"facts": formatted, "count": len(formatted)})
         except Exception as exc:
             logger.warning("eidolon_lookup_fact failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_delete_fact(self, args: dict) -> str:
+        edge_id = str(args.get("edge_id", "")).strip()
+        if not edge_id:
+            return tool_error("edge_id is required")
+        try:
+            result = self._call("delete_fact", {
+                "edge_id": edge_id,
+            })
+            return json.dumps({"deleted": result.get("deleted", False)})
+        except Exception as exc:
+            logger.warning("eidolon_delete_fact failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_update_fact(self, args: dict) -> str:
+        edge_id = str(args.get("edge_id", "")).strip()
+        if not edge_id:
+            return tool_error("edge_id is required")
+        importance = args.get("importance")
+        if importance is None:
+            return tool_error("importance is required")
+        importance = float(importance)
+        importance = max(0.0, min(1.0, importance))
+        confidence = args.get("confidence", -1.0)
+        if confidence is not None:
+            confidence = float(confidence)
+            confidence = max(0.0, min(1.0, confidence))
+        try:
+            result = self._call("update_fact_importance", {
+                "edge_id": edge_id,
+                "importance": importance,
+                "confidence": confidence,
+            })
+            return json.dumps({"updated": result.get("updated", False)})
+        except Exception as exc:
+            logger.warning("eidolon_update_fact failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_get_episodic(self, args: dict) -> str:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return tool_error("query is required")
+        memory_types = str(args.get("memory_types", "")).strip()
+        intent = str(args.get("intent", self._recall_intent)).lower()
+        if intent not in _VALID_INTENTS:
+            intent = self._recall_intent
+        limit = int(args.get("limit", 5))
+        try:
+            result = self._call("get_episodic", {
+                "companion_id": self._companion_id,
+                "query": query,
+                "memory_types": memory_types,
+                "intent": intent,
+                "limit": limit,
+            })
+            memories = result.get("memories", [])
+            formatted = [
+                {
+                    "text": m.get("text", ""),
+                    "memory_type": m.get("memory_type", ""),
+                    "importance": m.get("importance", 0),
+                    "score": m.get("score", 0),
+                }
+                for m in memories
+            ]
+            return json.dumps({"memories": formatted, "count": len(formatted)})
+        except Exception as exc:
+            logger.warning("eidolon_get_episodic failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_get_relationship(self) -> str:
+        try:
+            result = self._call("get_relationship", {
+                "companion_id": self._companion_id,
+            })
+            return json.dumps({
+                "trust": result.get("trust", 0),
+                "closeness": result.get("closeness", 0),
+                "interactions": result.get("interactions", 0),
+                "absence_streak_days": result.get("absence_streak_days", 0),
+                "milestones": result.get("milestones", []),
+            })
+        except Exception as exc:
+            logger.warning("eidolon_get_relationship failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_set_preference(self, args: dict) -> str:
+        key = str(args.get("key", "")).strip()
+        value = str(args.get("value", "")).strip()
+        if not (key and value):
+            return tool_error("key and value are both required")
+        source = str(args.get("source", "explicit")).lower()
+        if source not in ("explicit", "inferred"):
+            source = "explicit"
+        try:
+            result = self._call("set_preference", {
+                "companion_id": self._companion_id,
+                "key": key,
+                "value": value,
+                "source": source,
+            })
+            return json.dumps({"key": result.get("key", key), "value": result.get("value", value), "stored": True})
+        except Exception as exc:
+            logger.warning("eidolon_set_preference failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_generate_diary(self) -> str:
+        try:
+            result = self._call("generate_diary", {
+                "companion_id": self._companion_id,
+            }, timeout=60.0)
+            return json.dumps({
+                "memory_id": result.get("memory_id", ""),
+                "memory_type": result.get("memory_type", "diary"),
+                "text": result.get("text", ""),
+            })
+        except Exception as exc:
+            logger.warning("eidolon_generate_diary failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_generate_dream(self) -> str:
+        try:
+            result = self._call("generate_dream", {
+                "companion_id": self._companion_id,
+            }, timeout=60.0)
+            return json.dumps({
+                "memory_id": result.get("memory_id", ""),
+                "memory_type": result.get("memory_type", "dream"),
+                "text": result.get("text", ""),
+            })
+        except Exception as exc:
+            logger.warning("eidolon_generate_dream failed: %s", exc)
+            return tool_error(str(exc))
+
+    def _handle_get_companion(self) -> str:
+        try:
+            result = self._call("get_companion", {
+                "companion_id": self._companion_id,
+            })
+            if "error" in result:
+                return json.dumps({"error": result["error"]})
+            return json.dumps({
+                "companion_id": result.get("companion_id", ""),
+                "name": result.get("name", ""),
+                "persona": result.get("persona"),
+                "pronouns": result.get("pronouns"),
+                "personality_traits": result.get("personality_traits", []),
+                "llm_config": result.get("llm_config"),
+            })
+        except Exception as exc:
+            logger.warning("eidolon_get_companion failed: %s", exc)
             return tool_error(str(exc))
 
     # ------------------------------------------------------------------
