@@ -13,25 +13,70 @@ Long-term semantic memory plugin for [Hermes Agent](https://github.com/nousresea
 
 ## Installation
 
-### From source (development)
+### Prerequisites
+
+- Hermes Agent installed and configured
+- Eidolon Agent Memory MCP server running (see [eidolon-agent-memory](https://github.com/eidolonlabs-ai/eidolon-agent-memory))
+
+### Step 1: Install the plugin in Hermes' Python environment
+
+Hermes uses its own virtual environment. Install the plugin there:
 
 ```bash
-git clone https://github.com/eidolonlabs-ai/hermes-eidolon-memory.git
-cd hermes-eidolon-memory
-pip install -e .
+# Find Hermes' Python executable
+HERMES_PYTHON=$(head -1 $(which hermes) | sed 's/#!//')
+
+# Install the plugin in Hermes' environment
+uv pip install -e . --python "$HERMES_PYTHON"
 ```
 
-### From PyPI (when published)
+Or manually:
 
 ```bash
-pip install hermes-eidolon-memory
+uv pip install -e . --python ~/.hermes/hermes-agent/venv/bin/python
 ```
 
-### From GitHub
+### Step 2: Register the plugin with Hermes
+
+Hermes discovers memory plugins from `~/.hermes/plugins/`. Create the plugin directory:
 
 ```bash
-pip install git+https://github.com/eidolonlabs-ai/hermes-eidolon-memory.git
+mkdir -p ~/.hermes/plugins/eidolon
 ```
+
+Copy the plugin code:
+
+```bash
+cp src/hermes_eidolon_memory/__init__.py ~/.hermes/plugins/eidolon/__init__.py
+```
+
+Create `~/.hermes/plugins/eidolon/plugin.yaml`:
+
+```yaml
+name: eidolon
+description: Eidolon Agent Memory — long-term semantic memory with fact triples, pgvector embeddings, episodic memory, and companion profiles.
+version: 1.0.0
+author: Eidolon Labs
+pip_dependencies:
+  - hermes-eidolon-memory
+```
+
+### Step 3: Verify installation
+
+```bash
+hermes memory setup
+```
+
+You should see `eidolon` in the list of available memory providers.
+
+### Alternative: From PyPI (when published)
+
+```bash
+hermes_python=$(head -1 $(which hermes) | sed 's/#!//')
+uv pip install hermes-eidolon-memory --python "$hermes_python"
+```
+
+Then follow Step 2 above to register the plugin.
 
 ## Configuration
 

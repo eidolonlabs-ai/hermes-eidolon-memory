@@ -28,3 +28,6 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+# uv lock file (not needed for libraries)
+uv.lock
