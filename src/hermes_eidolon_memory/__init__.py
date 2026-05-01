@@ -208,8 +208,9 @@ def _save_config(values: dict, hermes_home: str) -> None:
 SEARCH_SCHEMA = {
     "name": "eidolon_search",
     "description": (
-        "Search long-term memory for facts about the user. Returns semantically "
-        "relevant fact triples ranked by importance and relevance."
+        "Search long-term memory for fact triples about the user. Returns semantically "
+        "relevant (subject, predicate, object) triples ranked by importance and relevance. "
+        "Use for broad queries like 'what does the user like?' or 'tell me about their work'."
     ),
     "parameters": {
         "type": "object",
@@ -242,7 +243,7 @@ STORE_FACT_SCHEMA = {
             "subject": {"type": "string", "description": "The entity the fact is about."},
             "predicate": {"type": "string", "description": "The relationship or attribute."},
             "object_value": {"type": "string", "description": "The value or target of the relationship."},
-            "fact_text": {"type": "string", "description": "Human-readable fact sentence."},
+            "fact_text": {"type": "string", "description": "Natural language version of the fact, e.g. 'User prefers dark mode'."},
             "emotional_salience": {
                 "type": "string",
                 "enum": ["LOW", "MED", "HIGH"],
@@ -308,8 +309,8 @@ GENERATE_INSIGHTS_SCHEMA = {
 GENERATE_MUSING_SCHEMA = {
     "name": "eidolon_generate_musing",
     "description": (
-        "Generate a short spontaneous reflection or musing based on stored memories. "
-        "Use during idle moments or when the user wants a thoughtful, unprompted observation. "
+        "Generate a short, thoughtful observation or poetic reflection based on stored memories. "
+        "Use during idle moments or when the user wants an unprompted, contemplative note. "
         "Do not call inside active response generation."
     ),
     "parameters": {
