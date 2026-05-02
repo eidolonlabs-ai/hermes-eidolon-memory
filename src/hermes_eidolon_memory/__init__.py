@@ -267,8 +267,8 @@ JOURNAL_SCHEMA = {
             "text": {"type": "string", "description": "The journal/diary/dream content to store."},
             "memory_type": {
                 "type": "string",
-                "enum": ["journal", "reflection", "diary", "dream", "musing", "narrative", "conversation"],
-                "description": "Type of entry. Use 'dream' for dreams, 'diary' for diary-style, 'reflection' for reflections.",
+                "enum": ["conversation", "reflection", "diary", "dream", "musing", "narrative"],
+                "description": "Type of entry. Use 'dream' for dreams, 'diary' for diary-style, 'reflection' for reflections, 'conversation' for exchanges.",
             },
             "importance": {
                 "type": "number",
@@ -711,11 +711,11 @@ class EidolonMemoryProvider(MemoryProvider):
                 "companion_id": self._companion_id,
                 "subject": subject,
                 "predicate": predicate,
-                "object_value": object_value,
+                "obj": object_value,
                 "fact_text": fact_text,
                 "emotional_salience": salience,
             })
-            return json.dumps({"stored": True, "fact_id": result.get("fact_id", "")})
+            return json.dumps({"stored": True, "fact_id": result.get("edge_id", "")})
         except Exception as exc:
             logger.warning("eidolon_store_fact failed: %s", exc)
             return tool_error(str(exc))
@@ -724,10 +724,10 @@ class EidolonMemoryProvider(MemoryProvider):
         text = str(args.get("text", "")).strip()
         if not text:
             return tool_error("text is required")
-        memory_type = str(args.get("memory_type", "journal")).lower()
-        valid_types = {"journal", "reflection", "diary", "dream", "musing", "narrative", "conversation"}
+        memory_type = str(args.get("memory_type", "conversation")).lower()
+        valid_types = {"conversation", "reflection", "diary", "dream", "musing", "narrative"}
         if memory_type not in valid_types:
-            memory_type = "journal"
+            memory_type = "conversation"
         importance = float(args.get("importance", 0.5))
         importance = max(0.0, min(1.0, importance))
         try:
@@ -1177,7 +1177,7 @@ class EidolonMemoryProvider(MemoryProvider):
             result = setup_call("create_companion", {
                 "api_key": api_key,
                 "name": name,
-                "personality": personality or "A helpful, thoughtful AI companion.",
+                "persona": personality or "A helpful, thoughtful AI companion.",
             })
             companion_id = result.get("companion_id", "")
             if companion_id:
