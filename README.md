@@ -141,12 +141,19 @@ The plugin exposes these tools to the agent:
 |------|-------------|
 | `eidolon_search` | Semantic search for facts about the user |
 | `eidolon_store_fact` | Store a fact triple in long-term memory |
-| `eidolon_context` | Get a formatted memory context block |
-| `eidolon_journal` | Write a journal entry or reflection |
+| `eidolon_journal` | Write a journal entry, diary, dream, or reflection |
 | `eidolon_get_journal` | Retrieve the companion's journal |
 | `eidolon_generate_insights` | Synthesize psychological insights |
 | `eidolon_generate_musing` | Generate a spontaneous reflection |
 | `eidolon_lookup_fact` | Direct fact lookup by subject/predicate |
+| `eidolon_delete_fact` | Permanently delete a fact by edge_id |
+| `eidolon_update_fact` | Update a fact's importance/confidence |
+| `eidolon_get_episodic` | Search episodic memories (diary, dreams, conversations) |
+| `eidolon_get_relationship` | Get trust, closeness, and interaction state |
+| `eidolon_set_preference` | Store a user preference (key-value) |
+| `eidolon_generate_diary` | Generate a diary entry from companion perspective |
+| `eidolon_generate_dream` | Generate a dream-like narrative about the user |
+| `eidolon_get_companion` | Get companion configuration (name, persona, traits) |
 
 ## Requirements
 
