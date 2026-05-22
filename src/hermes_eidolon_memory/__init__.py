@@ -21,6 +21,7 @@ Secret: $HERMES_HOME/.env
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -40,6 +41,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "http://localhost:3100/mcp"
 _VALID_INTENTS = {"factual", "emotional", "casual", "recall"}
 _RPC_TIMEOUT = 30.0
+_RPC_ID = itertools.count(1)
+_MAX_SESSION_TURNS = 1000
 
 # ---------------------------------------------------------------------------
 # JSON-RPC helpers
@@ -65,17 +68,30 @@ def _mcp_initialize(api_url: str, timeout: float = _RPC_TIMEOUT) -> str:
             "capabilities": {},
             "clientInfo": {"name": "hermes-eidolon-plugin", "version": "1.0"},
         },
-        "id": 1,
+        "id": next(_RPC_ID),
     }).encode("utf-8")
     req = urllib.request.Request(api_url, data=payload, headers=_MCP_HEADERS, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             session_id = resp.headers.get("mcp-session-id", "")
-            resp.read()  # drain body
+            body_bytes = resp.read()
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Eidolon HTTP {e.code}: {e.reason}") from e
+        try:
+            error_body = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            error_body = e.reason
+        raise RuntimeError(f"Eidolon HTTP {e.code}: {error_body}") from e
     except Exception as exc:
         raise RuntimeError(f"Eidolon init error: {exc}") from exc
+
+    # Check for JSON-RPC error in successful response body
+    try:
+        body = json.loads(body_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        body = {}
+    if isinstance(body, dict) and "error" in body:
+        raise RuntimeError(f"Eidolon init error: {body['error']}")
+
     if not session_id:
         raise RuntimeError("Eidolon MCP server did not return a session ID")
     return session_id
@@ -83,9 +99,10 @@ def _mcp_initialize(api_url: str, timeout: float = _RPC_TIMEOUT) -> str:
 
 def _parse_sse(raw: str) -> dict:
     """Extract JSON from an SSE-wrapped or plain response body."""
-    lines = [l for l in raw.splitlines() if l.startswith("data:") and l.strip() != "data:"]
-    if lines:
-        return json.loads(lines[-1][5:].strip())
+    data_lines = [l[5:].strip() for l in raw.splitlines() if l.startswith("data:") and l.strip() != "data:"]
+    if data_lines:
+        payload = "".join(data_lines)
+        return json.loads(payload)
     return json.loads(raw)
 
 
@@ -102,7 +119,7 @@ def _rpc_call(api_url: str, tool_name: str, arguments: dict,
         "jsonrpc": "2.0",
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": arguments},
-        "id": 1,
+        "id": next(_RPC_ID),
     }).encode("utf-8")
     req = urllib.request.Request(api_url, data=payload, headers=headers, method="POST")
     try:
@@ -491,6 +508,23 @@ class EidolonMemoryProvider(MemoryProvider):
         # MCP session (established lazily on first _call)
         self._mcp_session_id = ""
         self._mcp_session_lock = threading.Lock()
+        self._handlers: dict[str, Any] = {
+            "eidolon_search": self._handle_search,
+            "eidolon_store_fact": self._handle_store_fact,
+            "eidolon_journal": self._handle_journal,
+            "eidolon_get_journal": self._handle_get_journal,
+            "eidolon_generate_insights": self._handle_generate_insights,
+            "eidolon_generate_musing": self._handle_generate_musing,
+            "eidolon_lookup_fact": self._handle_lookup_fact,
+            "eidolon_delete_fact": self._handle_delete_fact,
+            "eidolon_update_fact": self._handle_update_fact,
+            "eidolon_get_episodic": self._handle_get_episodic,
+            "eidolon_get_relationship": self._handle_get_relationship,
+            "eidolon_set_preference": self._handle_set_preference,
+            "eidolon_generate_diary": self._handle_generate_diary,
+            "eidolon_generate_dream": self._handle_generate_dream,
+            "eidolon_get_companion": self._handle_get_companion,
+        }
 
     @property
     def name(self) -> str:
@@ -606,6 +640,8 @@ class EidolonMemoryProvider(MemoryProvider):
         """Buffer the turn for batch extraction at session end."""
         if self._auto_extract:
             self._session_turns.append((user_content, assistant_content))
+            if len(self._session_turns) > _MAX_SESSION_TURNS:
+                self._session_turns = self._session_turns[-_MAX_SESSION_TURNS:]
 
     # ------------------------------------------------------------------
     # Tool schemas + dispatch
@@ -631,37 +667,10 @@ class EidolonMemoryProvider(MemoryProvider):
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-        if tool_name == "eidolon_search":
-            return self._handle_search(args)
-        if tool_name == "eidolon_store_fact":
-            return self._handle_store_fact(args)
-        if tool_name == "eidolon_journal":
-            return self._handle_journal(args)
-        if tool_name == "eidolon_get_journal":
-            return self._handle_get_journal()
-        if tool_name == "eidolon_generate_insights":
-            return self._handle_generate_insights()
-        if tool_name == "eidolon_generate_musing":
-            return self._handle_generate_musing()
-        if tool_name == "eidolon_lookup_fact":
-            return self._handle_lookup_fact(args)
-        if tool_name == "eidolon_delete_fact":
-            return self._handle_delete_fact(args)
-        if tool_name == "eidolon_update_fact":
-            return self._handle_update_fact(args)
-        if tool_name == "eidolon_get_episodic":
-            return self._handle_get_episodic(args)
-        if tool_name == "eidolon_get_relationship":
-            return self._handle_get_relationship()
-        if tool_name == "eidolon_set_preference":
-            return self._handle_set_preference(args)
-        if tool_name == "eidolon_generate_diary":
-            return self._handle_generate_diary()
-        if tool_name == "eidolon_generate_dream":
-            return self._handle_generate_dream()
-        if tool_name == "eidolon_get_companion":
-            return self._handle_get_companion()
-        return tool_error(f"Unknown eidolon tool: {tool_name}")
+        handler = self._handlers.get(tool_name)
+        if handler is None:
+            return tool_error(f"Unknown eidolon tool: {tool_name}")
+        return handler(args)
 
     def _handle_search(self, args: dict) -> str:
         query = str(args.get("query", "")).strip()
@@ -742,7 +751,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_journal failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_get_journal(self) -> str:
+    def _handle_get_journal(self, _args: dict) -> str:
         try:
             result = self._call("get_journal", {
                 "companion_id": self._companion_id,
@@ -757,7 +766,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_get_journal failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_generate_insights(self) -> str:
+    def _handle_generate_insights(self, _args: dict) -> str:
         try:
             result = self._call("generate_insights", {
                 "companion_id": self._companion_id,
@@ -768,7 +777,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_generate_insights failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_generate_musing(self) -> str:
+    def _handle_generate_musing(self, _args: dict) -> str:
         try:
             result = self._call("generate_musing", {
                 "companion_id": self._companion_id,
@@ -830,16 +839,17 @@ class EidolonMemoryProvider(MemoryProvider):
             return tool_error("importance is required")
         importance = float(importance)
         importance = max(0.0, min(1.0, importance))
-        confidence = args.get("confidence", -1.0)
+        confidence = args.get("confidence")
         if confidence is not None:
-            confidence = float(confidence)
-            confidence = max(0.0, min(1.0, confidence))
+            confidence = max(0.0, min(1.0, float(confidence)))
         try:
-            result = self._call("update_fact_importance", {
+            rpc_args: dict = {
                 "edge_id": edge_id,
                 "importance": importance,
-                "confidence": confidence,
-            })
+            }
+            if confidence is not None:
+                rpc_args["confidence"] = confidence
+            result = self._call("update_fact_importance", rpc_args)
             return json.dumps({"updated": result.get("updated", False)})
         except Exception as exc:
             logger.warning("eidolon_update_fact failed: %s", exc)
@@ -877,7 +887,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_get_episodic failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_get_relationship(self) -> str:
+    def _handle_get_relationship(self, _args: dict) -> str:
         try:
             result = self._call("get_relationship", {
                 "companion_id": self._companion_id,
@@ -913,7 +923,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_set_preference failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_generate_diary(self) -> str:
+    def _handle_generate_diary(self, _args: dict) -> str:
         try:
             result = self._call("generate_diary", {
                 "companion_id": self._companion_id,
@@ -927,7 +937,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_generate_diary failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_generate_dream(self) -> str:
+    def _handle_generate_dream(self, _args: dict) -> str:
         try:
             result = self._call("generate_dream", {
                 "companion_id": self._companion_id,
@@ -941,7 +951,7 @@ class EidolonMemoryProvider(MemoryProvider):
             logger.warning("eidolon_generate_dream failed: %s", exc)
             return tool_error(str(exc))
 
-    def _handle_get_companion(self) -> str:
+    def _handle_get_companion(self, _args: dict) -> str:
         try:
             result = self._call("get_companion", {
                 "companion_id": self._companion_id,
@@ -1087,14 +1097,12 @@ class EidolonMemoryProvider(MemoryProvider):
                 })
                 api_key = result.get("api_key", "")
                 if not api_key:
-                    print("  ✗ provision_user did not return an API key.")
-                    sys.exit(1)
+                    raise RuntimeError("provision_user did not return an API key")
                 print(f"\n  ✓ User created.")
                 print(f"  API key: {api_key}")
                 print("  ⚠ This key will NOT be shown again — write it down!\n")
             except Exception as exc:
-                print(f"  ✗ Failed to provision user: {exc}")
-                sys.exit(1)
+                raise RuntimeError(f"Failed to provision user: {exc}") from exc
 
         elif choice == "e":
             sys.stdout.write("  API key (mnemo-...): ")
@@ -1102,8 +1110,7 @@ class EidolonMemoryProvider(MemoryProvider):
             api_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
 
         if not api_key:
-            print("  ✗ No API key. Aborting setup.")
-            sys.exit(1)
+            raise RuntimeError("No API key — setup cannot continue")
 
         # List existing companions
         companions: list[dict] = []
@@ -1132,8 +1139,7 @@ class EidolonMemoryProvider(MemoryProvider):
             companion_id = self._wizard_create_companion(_setup_call, api_key)
 
         if not companion_id:
-            print("  ✗ No companion selected. Aborting setup.")
-            sys.exit(1)
+            raise RuntimeError("No companion selected — setup cannot continue")
 
         # Recall intent
         intents = ["factual", "emotional", "casual", "recall"]
