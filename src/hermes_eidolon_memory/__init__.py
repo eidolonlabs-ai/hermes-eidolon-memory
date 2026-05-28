@@ -40,9 +40,27 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "http://localhost:3100/mcp"
 _VALID_INTENTS = {"factual", "emotional", "casual", "recall"}
+
+
+def _safe_float(value, default: float) -> float:
+    """Parse a float value safely, returning *default* on failure."""
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(value, default: int) -> int:
+    """Parse an int value safely, returning *default* on failure."""
+    try:
+        return max(1, int(value))
+    except (ValueError, TypeError):
+        return default
+_VALID_CONFIG_KEYS = {"api_url", "companion_id", "recall_intent", "auto_recall", "auto_extract"}
 _RPC_TIMEOUT = 30.0
-_RPC_ID = itertools.count(1)
 _MAX_SESSION_TURNS = 1000
+# Module-level counter for standalone (non-instance) calls (setup wizard, tests)
+_DEFAULT_RPC_ID = itertools.count(1)
 
 # ---------------------------------------------------------------------------
 # JSON-RPC helpers
@@ -54,7 +72,12 @@ _MCP_HEADERS = {
 }
 
 
-def _mcp_initialize(api_url: str, timeout: float = _RPC_TIMEOUT) -> str:
+def _mcp_initialize(
+    api_url: str,
+    timeout: float = _RPC_TIMEOUT,
+    *,
+    _rpc_id: itertools.Count = _DEFAULT_RPC_ID,
+) -> str:
     """Run the MCP initialize handshake and return the session ID.
 
     FastMCP streamable-http requires an initialize request before any tool call.
@@ -68,7 +91,7 @@ def _mcp_initialize(api_url: str, timeout: float = _RPC_TIMEOUT) -> str:
             "capabilities": {},
             "clientInfo": {"name": "hermes-eidolon-plugin", "version": "1.0"},
         },
-        "id": next(_RPC_ID),
+        "id": next(_rpc_id),
     }).encode("utf-8")
     req = urllib.request.Request(api_url, data=payload, headers=_MCP_HEADERS, method="POST")
     try:
@@ -102,13 +125,29 @@ def _parse_sse(raw: str) -> dict:
     data_lines = [l[5:].strip() for l in raw.splitlines() if l.startswith("data:") and l.strip() != "data:"]
     if data_lines:
         payload = "".join(data_lines)
-        return json.loads(payload)
-    return json.loads(raw)
+    else:
+        payload = raw
+    try:
+        body = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.debug("Failed to parse MCP response: %s", raw[:200])
+        return {}
+    # Validate that the response has an expected JSON-RPC structure
+    if not isinstance(body, dict) or ("error" not in body and "result" not in body):
+        logger.debug("Unexpected MCP response structure: %s", body)
+        return {}
+    return body
 
 
-def _rpc_call(api_url: str, tool_name: str, arguments: dict,
-              timeout: float = _RPC_TIMEOUT,
-              session_id: str = "") -> dict:
+def _rpc_call(
+    api_url: str,
+    tool_name: str,
+    arguments: dict,
+    timeout: float = _RPC_TIMEOUT,
+    session_id: str = "",
+    *,
+    _rpc_id: itertools.Count = _DEFAULT_RPC_ID,
+) -> dict:
     """Call an eidolon MCP tool via JSON-RPC 2.0 over streamable-http.
 
     Requires a pre-established session_id from _mcp_initialize().
@@ -119,7 +158,7 @@ def _rpc_call(api_url: str, tool_name: str, arguments: dict,
         "jsonrpc": "2.0",
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": arguments},
-        "id": next(_RPC_ID),
+        "id": next(_rpc_id),
     }).encode("utf-8")
     req = urllib.request.Request(api_url, data=payload, headers=headers, method="POST")
     try:
@@ -214,7 +253,8 @@ def _save_config(values: dict, hermes_home: str) -> None:
             existing = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
-    existing.update(values)
+    # Only allow known config keys to prevent config injection
+    existing.update({k: v for k, v in values.items() if k in _VALID_CONFIG_KEYS})
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
@@ -505,9 +545,13 @@ class EidolonMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: threading.Thread | None = None
+        # Per-instance RPC ID counter (module-level counter for standalone calls)
+        self._rpc_id = itertools.count(1)
         # MCP session (established lazily on first _call)
         self._mcp_session_id = ""
         self._mcp_session_lock = threading.Lock()
+        # Protects _session_turns from concurrent read/write
+        self._turns_lock = threading.Lock()
         self._handlers: dict[str, Any] = {
             "eidolon_search": self._handle_search,
             "eidolon_store_fact": self._handle_store_fact,
@@ -538,7 +582,7 @@ class EidolonMemoryProvider(MemoryProvider):
         """Return a valid MCP session ID, initializing one if needed."""
         with self._mcp_session_lock:
             if not self._mcp_session_id:
-                self._mcp_session_id = _mcp_initialize(self._api_url)
+                self._mcp_session_id = _mcp_initialize(self._api_url, _rpc_id=self._rpc_id)
             return self._mcp_session_id
 
     def _call(self, tool_name: str, arguments: dict, timeout: float = _RPC_TIMEOUT) -> dict:
@@ -546,14 +590,16 @@ class EidolonMemoryProvider(MemoryProvider):
         arguments = {"api_key": self._api_key, **arguments}
         try:
             return _rpc_call(self._api_url, tool_name, arguments,
-                             timeout=timeout, session_id=self._get_mcp_session())
+                             timeout=timeout, session_id=self._get_mcp_session(),
+                             _rpc_id=self._rpc_id)
         except RuntimeError as exc:
             # Session may have expired — reset and retry once
             if "session" in str(exc).lower() or "400" in str(exc):
                 with self._mcp_session_lock:
                     self._mcp_session_id = ""
                 return _rpc_call(self._api_url, tool_name, arguments,
-                                 timeout=timeout, session_id=self._get_mcp_session())
+                                 timeout=timeout, session_id=self._get_mcp_session(),
+                                 _rpc_id=self._rpc_id)
             raise
 
     # ------------------------------------------------------------------
@@ -580,6 +626,7 @@ class EidolonMemoryProvider(MemoryProvider):
         self._session_turns = []
         self._prefetch_result = ""
         self._mcp_session_id = ""  # reset MCP session on each agent session
+        self._rpc_id = itertools.count(1)  # reset per-instance RPC ID
         logger.info(
             "Eidolon initialized: api_url=%s, companion=%s, intent=%s, auto_recall=%s, auto_extract=%s",
             self._api_url, self._companion_id, self._recall_intent, self._auto_recall, self._auto_extract,
@@ -638,7 +685,9 @@ class EidolonMemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Buffer the turn for batch extraction at session end."""
-        if self._auto_extract:
+        if not self._auto_extract:
+            return
+        with self._turns_lock:
             self._session_turns.append((user_content, assistant_content))
             if len(self._session_turns) > _MAX_SESSION_TURNS:
                 self._session_turns = self._session_turns[-_MAX_SESSION_TURNS:]
@@ -679,7 +728,7 @@ class EidolonMemoryProvider(MemoryProvider):
         intent = str(args.get("intent", self._recall_intent)).lower()
         if intent not in _VALID_INTENTS:
             intent = self._recall_intent
-        limit = int(args.get("limit", 10))
+        limit = _safe_int(args.get("limit"), 10)
         try:
             result = self._call("search_memory", {
                 "companion_id": self._companion_id,
@@ -737,8 +786,7 @@ class EidolonMemoryProvider(MemoryProvider):
         valid_types = {"conversation", "reflection", "diary", "dream", "musing", "narrative"}
         if memory_type not in valid_types:
             memory_type = "conversation"
-        importance = float(args.get("importance", 0.5))
-        importance = max(0.0, min(1.0, importance))
+        importance = _safe_float(args.get("importance"), 0.5)
         try:
             result = self._call("store_episodic", {
                 "companion_id": self._companion_id,
@@ -837,11 +885,13 @@ class EidolonMemoryProvider(MemoryProvider):
         importance = args.get("importance")
         if importance is None:
             return tool_error("importance is required")
-        importance = float(importance)
-        importance = max(0.0, min(1.0, importance))
+        try:
+            importance = max(0.0, min(1.0, float(importance)))
+        except (ValueError, TypeError):
+            return tool_error(f"Invalid importance value: {importance}")
         confidence = args.get("confidence")
         if confidence is not None:
-            confidence = max(0.0, min(1.0, float(confidence)))
+            confidence = _safe_float(confidence, None)  # None keeps it omitted
         try:
             rpc_args: dict = {
                 "edge_id": edge_id,
@@ -863,7 +913,7 @@ class EidolonMemoryProvider(MemoryProvider):
         intent = str(args.get("intent", self._recall_intent)).lower()
         if intent not in _VALID_INTENTS:
             intent = self._recall_intent
-        limit = int(args.get("limit", 5))
+        limit = _safe_int(args.get("limit"), 5)
         try:
             result = self._call("get_episodic", {
                 "companion_id": self._companion_id,
@@ -975,7 +1025,12 @@ class EidolonMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._auto_extract or not self._companion_id or not self._session_turns:
+        if not self._auto_extract or not self._companion_id:
+            return
+        # Snapshot turns under lock so the background thread doesn't race with sync_turn
+        with self._turns_lock:
+            turns = list(self._session_turns)
+        if not turns:
             return
 
         def _run() -> None:
@@ -983,7 +1038,7 @@ class EidolonMemoryProvider(MemoryProvider):
                 import uuid
                 transcript = "\n".join(
                     f"User: {u}\nAssistant: {a}"
-                    for u, a in self._session_turns
+                    for u, a in turns
                     if u or a
                 )
                 if not transcript.strip():
@@ -1000,13 +1055,12 @@ class EidolonMemoryProvider(MemoryProvider):
                     timeout=60.0,
                 )
                 logger.info("Eidolon: session fact extraction complete (%d turns). Result: %s",
-                            len(self._session_turns), result)
+                            len(turns), result)
             except Exception as exc:
                 logger.warning("Eidolon: session fact extraction failed: %s", exc, exc_info=True)
 
         t = threading.Thread(target=_run, daemon=True, name="eidolon-extract")
         t.start()
-        t.join(timeout=65.0)
 
     # ------------------------------------------------------------------
     # Setup wizard
@@ -1099,7 +1153,8 @@ class EidolonMemoryProvider(MemoryProvider):
                 if not api_key:
                     raise RuntimeError("provision_user did not return an API key")
                 print(f"\n  ✓ User created.")
-                print(f"  API key: {api_key}")
+                masked = f"mnemo-...{api_key[-4:]}" if len(api_key) > 4 else "(set)"
+                print(f"  API key: {masked}")
                 print("  ⚠ This key will NOT be shown again — write it down!\n")
             except Exception as exc:
                 raise RuntimeError(f"Failed to provision user: {exc}") from exc
